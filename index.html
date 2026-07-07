@@ -1,0 +1,1754 @@
+<!DOCTYPE html>
+<html lang="gu">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>સંસ્કાર સિંચન સર્વે</title>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Gujarati:wght@400;600;700&display=swap" rel="stylesheet">
+
+<!-- ══════════════════════════════════════════════════════════
+     FIREBASE CONFIG — replace with your own project values
+     1. Go to https://console.firebase.google.com
+     2. Create project → Add web app → copy firebaseConfig
+     3. Enable Realtime Database in "Build" section
+     4. Set rules to allow read/write (secure later with auth)
+  ══════════════════════════════════════════════════════════ -->
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-app.js";
+  import { getDatabase, ref, set, get, push, onValue, update }
+    from "https://www.gstatic.com/firebasejs/11.0.1/firebase-database.js";
+
+  // ▼▼▼ FIREBASE CONFIG ▼▼▼
+  const firebaseConfig = {
+    apiKey:            "AIzaSyCbgA-jQ33X5NG_KQo7Zk19yk4ixFv7PNI",
+    authDomain:        "sanskar-sinchan-survey.firebaseapp.com",
+    databaseURL:       "https://sanskar-sinchan-survey-default-rtdb.asia-southeast1.firebasedatabase.app",
+    projectId:         "sanskar-sinchan-survey",
+    storageBucket:     "sanskar-sinchan-survey.firebasestorage.app",
+    messagingSenderId: "564593562733",
+    appId:             "1:564593562733:web:987cd99162193c88e69b64"
+  };
+  // ▲▲▲ END OF CONFIG ▲▲▲
+
+  const app = initializeApp(firebaseConfig);
+  const db  = getDatabase(app);
+
+  // Expose DB helpers to global scope so non-module code can call them
+  window._db = {
+    // ── SURVEYORS ──────────────────────────────────────────
+    async getSurveyor(phone) {
+      const snap = await get(ref(db, `surveyors/${phone}`));
+      return snap.exists() ? snap.val() : null;
+    },
+    async registerSurveyor(phone, name) {
+      await set(ref(db, `surveyors/${phone}`), {
+        name,
+        registeredAt: new Date().toISOString()
+      });
+    },
+
+    // ── STUDENTS ───────────────────────────────────────────
+    // Returns all students belonging to a surveyor
+    async getStudents(surveyorPhone) {
+      const snap = await get(ref(db, `students`));
+      if (!snap.exists()) return [];
+      const all = snap.val();
+      return Object.entries(all)
+        .filter(([,s]) => s.surveyorPhone === surveyorPhone)
+        .map(([id, s]) => ({ id, ...s }))
+        .sort((a,b) => (a.name||'').localeCompare(b.name||''));
+    },
+    async addStudent(studentData) {
+      // Push generates a unique Firebase key
+      const newRef = push(ref(db, 'students'));
+      await set(newRef, studentData);
+      return newRef.key;
+    },
+
+    // ── ADMIN: ALL STUDENTS ────────────────────────────────
+    async getAllStudents() {
+      const snap = await get(ref(db, `students`));
+      if (!snap.exists()) return [];
+      return Object.entries(snap.val()).map(([id, s]) => ({ id, ...s }))
+        .sort((a,b) => (a.name||'').localeCompare(b.name||''));
+    },
+    async getAllSurveyors() {
+      const snap = await get(ref(db, `surveyors`));
+      if (!snap.exists()) return {};
+      return snap.val();
+    },
+
+    // ── DELETE ─────────────────────────────────────────────
+    // Delete a single student (and their survey data)
+    async deleteStudent(id) {
+      await update(ref(db), {
+        [`students/${id}`]: null,
+        [`surveys/${id}`]: null
+      });
+    },
+    // Delete multiple students (and their survey data) in one batch
+    async deleteStudents(ids) {
+      const updates = {};
+      ids.forEach(id => {
+        updates[`students/${id}`] = null;
+        updates[`surveys/${id}`] = null;
+      });
+      await update(ref(db), updates);
+    },
+    // Delete ALL students and ALL survey data
+    async deleteAllStudents() {
+      await update(ref(db), { students: null, surveys: null });
+    },
+
+    // ── SURVEY DATA ────────────────────────────────────────
+    async getSurveyData(studentId) {
+      const snap = await get(ref(db, `surveys/${studentId}`));
+      return snap.exists() ? snap.val() : {};
+    },
+    // Save one section — merges into existing data
+    async saveSurveySection(studentId, section, sectionData) {
+      await update(ref(db, `surveys/${studentId}`), { [section]: sectionData });
+    }
+  };
+</script>
+
+<style>
+:root {
+  --saffron:#E8690A; --saffron-light:#F5A048; --saffron-pale:#FEF3E8;
+  --deep-green:#1A5C3A; --mid-green:#2D8257; --light-green:#E8F5EE;
+  --gold:#C9920A; --gold-light:#F0C040;
+  --cream:#FDFAF4; --warm-white:#FFFEF9;
+  --text-dark:#1C1810; --text-mid:#4A3F30; --text-light:#7A6A55;
+  --border:#E0C9A0; --shadow:0 4px 24px rgba(100,60,0,0.10);
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{font-family:'Noto Sans Gujarati',sans-serif;background:var(--cream);color:var(--text-dark);min-height:100vh;
+  background-image:radial-gradient(circle at 10% 20%,rgba(232,105,10,0.06) 0%,transparent 50%),
+                   radial-gradient(circle at 90% 80%,rgba(26,92,58,0.06) 0%,transparent 50%);}
+
+/* ── LOADING OVERLAY ─────────────────────────────── */
+#loadingOverlay{position:fixed;inset:0;background:rgba(255,253,245,0.92);z-index:9999;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;
+  backdrop-filter:blur(4px);}
+#loadingOverlay.hidden{display:none;}
+.spinner{width:44px;height:44px;border:4px solid var(--border);
+  border-top-color:var(--mid-green);border-radius:50%;animation:spin .8s linear infinite;}
+@keyframes spin{to{transform:rotate(360deg);}}
+.loading-text{font-size:14px;color:var(--text-mid);font-weight:600;}
+
+/* ── HEADER ──────────────────────────────────────── */
+.header{background:linear-gradient(135deg,var(--deep-green) 0%,#0E3D25 100%);position:relative;overflow:hidden;}
+.header::before{content:'';position:absolute;inset:0;
+  background-image:repeating-linear-gradient(45deg,transparent,transparent 20px,rgba(255,255,255,0.03) 20px,rgba(255,255,255,0.03) 40px),
+                   repeating-linear-gradient(-45deg,transparent,transparent 20px,rgba(255,255,255,0.03) 20px,rgba(255,255,255,0.03) 40px);}
+.header-top-bar{height:6px;background:linear-gradient(90deg,var(--gold),var(--saffron),var(--gold-light),var(--saffron),var(--gold));}
+.header-inner{display:flex;align-items:center;gap:20px;padding:22px 36px;position:relative;}
+.logo-circle{width:62px;height:62px;background:linear-gradient(135deg,var(--gold-light),var(--saffron));
+  border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:28px;flex-shrink:0;
+  box-shadow:0 4px 16px rgba(0,0,0,0.3);border:3px solid rgba(255,255,255,0.2);}
+.header-text h1{font-size:24px;font-weight:700;color:#fff;}
+.header-text p{color:rgba(255,255,255,0.65);font-size:12px;margin-top:3px;letter-spacing:1.5px;text-transform:uppercase;}
+.header-bottom-bar{height:4px;background:linear-gradient(90deg,var(--gold),var(--saffron-light),var(--gold));}
+.progress-wrap{margin-top:12px;}
+.progress-label{font-size:12px;color:rgba(255,255,255,0.7);margin-bottom:5px;}
+.progress-track{background:rgba(255,255,255,0.2);border-radius:6px;height:7px;overflow:hidden;}
+.progress-fill{height:100%;border-radius:6px;background:linear-gradient(90deg,var(--gold-light),var(--saffron-light));transition:width .4s ease;}
+
+/* ── MAIN / SCREENS ──────────────────────────────── */
+.main{max-width:860px;margin:0 auto;padding:30px 18px 60px;}
+.screen{display:none;}
+.screen.active{display:block;}
+
+/* ── CARD ────────────────────────────────────────── */
+.card{background:var(--warm-white);border-radius:16px;border:1.5px solid var(--border);padding:26px 28px;margin-bottom:22px;box-shadow:var(--shadow);}
+.card-title{display:flex;align-items:center;gap:12px;margin-bottom:20px;padding-bottom:14px;border-bottom:2px solid var(--border);}
+.card-title .icon{width:36px;height:36px;border-radius:10px;background:linear-gradient(135deg,var(--deep-green),var(--mid-green));
+  color:#fff;display:flex;align-items:center;justify-content:center;font-size:17px;flex-shrink:0;}
+.card-title h2{font-size:16px;font-weight:700;color:var(--deep-green);}
+
+/* ── FORM ────────────────────────────────────────── */
+.form-row{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
+.form-group{display:flex;flex-direction:column;gap:6px;}
+.form-group.full{grid-column:1/-1;}
+label{font-size:12.5px;font-weight:600;color:var(--text-mid);}
+input[type="text"],input[type="tel"],select,textarea{
+  font-family:'Noto Sans Gujarati',sans-serif;font-size:14px;color:var(--text-dark);
+  background:var(--cream);border:1.5px solid var(--border);border-radius:9px;padding:10px 13px;
+  transition:border-color .2s,box-shadow .2s;outline:none;width:100%;}
+input:focus,select:focus,textarea:focus{border-color:var(--mid-green);box-shadow:0 0 0 3px rgba(45,130,87,0.12);}
+input[readonly],input:disabled{background:#f0f0f0!important;cursor:default!important;color:var(--text-mid);}
+select{cursor:pointer;}
+
+/* ── BUTTONS ─────────────────────────────────────── */
+.btn{font-family:'Noto Sans Gujarati',sans-serif;font-size:13px;font-weight:700;border:none;border-radius:10px;
+  padding:10px 20px;cursor:pointer;transition:transform .15s,box-shadow .15s;white-space:nowrap;}
+.btn:hover{transform:translateY(-1px);box-shadow:0 4px 14px rgba(0,0,0,0.15);}
+.btn-primary{background:linear-gradient(135deg,var(--deep-green),var(--mid-green));color:#fff;}
+.btn-saffron{background:linear-gradient(135deg,var(--saffron),var(--saffron-light));color:#fff;}
+.btn-sm{padding:7px 14px;font-size:12px;}
+.btn-outline{background:transparent;border:1.5px solid var(--border);color:var(--text-mid);}
+.btn-outline:hover{border-color:var(--mid-green);color:var(--deep-green);}
+.btn:disabled{opacity:.5;cursor:not-allowed;transform:none;}
+
+/* ── OR DIVIDER ──────────────────────────────────── */
+.or-divider{display:flex;align-items:center;gap:12px;margin:18px 0;}
+.or-divider::before,.or-divider::after{content:'';flex:1;height:1px;background:var(--border);}
+.or-divider span{font-size:12px;color:var(--text-light);font-weight:600;}
+
+/* ── STUDENT LIST ────────────────────────────────── */
+.student-card{display:flex;align-items:center;justify-content:space-between;gap:12px;
+  background:var(--warm-white);border:1.5px solid var(--border);border-radius:12px;padding:14px 18px;
+  transition:border-color .2s,box-shadow .2s;margin-bottom:10px;}
+.student-card:hover{border-color:var(--mid-green);box-shadow:0 2px 12px rgba(26,92,58,0.1);}
+.student-card .sc-info h4{font-size:14px;font-weight:700;color:var(--text-dark);}
+.student-card .sc-info p{font-size:12px;color:var(--text-light);margin-top:2px;}
+.section-pills{display:flex;gap:5px;flex-wrap:wrap;margin-top:7px;}
+.pill{font-size:10px;font-weight:700;padding:3px 9px;border-radius:20px;}
+.pill.done{background:var(--light-green);color:var(--deep-green);}
+.pill.pending{background:#F5F0E8;color:var(--text-light);}
+.empty-state{text-align:center;padding:32px;color:var(--text-light);font-size:14px;}
+.empty-state .es-icon{font-size:40px;margin-bottom:10px;}
+.selector-row{display:flex;gap:10px;align-items:flex-end;}
+.selector-row select{flex:1;}
+
+/* ── BACK ROW ────────────────────────────────────── */
+.back-row{display:flex;align-items:center;gap:12px;margin-bottom:18px;}
+.back-btn{background:none;border:none;cursor:pointer;font-size:13px;color:var(--text-mid);
+  font-family:'Noto Sans Gujarati',sans-serif;font-weight:600;display:flex;align-items:center;gap:6px;padding:6px 0;}
+.back-btn:hover{color:var(--deep-green);}
+.current-student-tag{background:var(--light-green);color:var(--deep-green);border-radius:20px;padding:4px 14px;font-size:13px;font-weight:700;}
+
+/* ── TABS ────────────────────────────────────────── */
+.respondent-tabs{display:flex;border-radius:14px 14px 0 0;overflow:hidden;border:1.5px solid var(--border);border-bottom:none;}
+.tab-btn{flex:1;padding:13px 6px;background:var(--light-green);border:none;cursor:pointer;
+  font-family:'Noto Sans Gujarati',sans-serif;font-size:12px;font-weight:600;color:var(--text-mid);
+  transition:all .2s;border-right:1.5px solid var(--border);display:flex;flex-direction:column;align-items:center;gap:3px;position:relative;}
+.tab-btn:last-child{border-right:none;}
+.tab-btn .tab-icon{font-size:18px;}
+.tab-btn.active{background:var(--deep-green);color:#fff;}
+.done-badge{position:absolute;top:5px;right:6px;width:15px;height:15px;background:var(--mid-green);
+  border-radius:50%;color:#fff;font-size:9px;display:none;align-items:center;justify-content:center;}
+.tab-btn.done-tab{background:#d4edda;}
+.tab-btn.done-tab.active{background:var(--deep-green);color:#fff;}
+.tab-panel{display:none;background:var(--warm-white);border:1.5px solid var(--border);border-top:none;border-radius:0 0 16px 16px;padding:24px 24px 20px;}
+.tab-panel.active{display:block;}
+
+/* ── READONLY OVERLAY on saved section ──────────── */
+.section-locked-notice{display:none;background:var(--light-green);border:1px solid var(--mid-green);
+  border-radius:9px;padding:9px 14px;font-size:12px;font-weight:600;color:var(--deep-green);margin-bottom:12px;}
+.section-locked-notice.show{display:flex;align-items:center;gap:8px;}
+
+/* ── RESPONDENT INFO ─────────────────────────────── */
+.respondent-info{background:var(--light-green);border-radius:10px;padding:13px 16px;margin-bottom:16px;}
+.respondent-info label{font-size:12px;color:var(--mid-green);display:block;margin-bottom:5px;}
+.respondent-info input{background:#fff;border-color:rgba(45,130,87,0.3);font-size:13px;padding:8px 12px;}
+
+/* ── QUESTIONS ───────────────────────────────────── */
+.star-labels{display:flex;justify-content:space-between;padding:4px 14px;font-size:11px;color:var(--text-light);font-style:italic;}
+.questions-list{display:flex;flex-direction:column;gap:3px;margin-top:8px;}
+.question-row{display:flex;align-items:center;justify-content:space-between;padding:12px 14px;border-radius:10px;gap:12px;}
+.question-row:nth-child(odd){background:var(--saffron-pale);}
+.question-row:nth-child(even){background:var(--light-green);}
+.q-num{width:24px;height:24px;background:var(--deep-green);color:#fff;border-radius:50%;
+  display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;flex-shrink:0;}
+.q-text{flex:1;font-size:14px;font-weight:600;color:var(--text-dark);line-height:1.4;}
+.star-rating{display:flex;flex-direction:row-reverse;gap:3px;flex-shrink:0;}
+.star-rating input{display:none;}
+.star-rating label{font-size:24px;color:#C8B89A;cursor:pointer;transition:color .15s,transform .1s;line-height:1;padding:0;font-weight:400;}
+.star-rating label:hover,.star-rating label:hover~label,.star-rating input:checked~label{color:var(--gold);}
+.star-rating label:hover{transform:scale(1.18);}
+/* Locked stars */
+.star-rating.locked label{cursor:default;pointer-events:none;}
+
+/* ── SECTION FOOTER ──────────────────────────────── */
+.section-footer{display:flex;align-items:center;justify-content:space-between;margin-top:18px;
+  padding-top:14px;border-top:1.5px dashed var(--border);flex-wrap:wrap;gap:10px;}
+.score-info{display:flex;align-items:center;gap:8px;}
+.score-badge{background:linear-gradient(135deg,var(--deep-green),var(--mid-green));color:#fff;
+  border-radius:20px;padding:5px 16px;font-size:13px;font-weight:600;}
+.saved-indicator{font-size:12px;color:var(--mid-green);font-weight:600;display:none;}
+.saved-indicator.show{display:inline;}
+.remarks-box{margin-top:14px;}
+.remarks-box label{display:block;margin-bottom:5px;font-size:12px;font-weight:600;color:var(--text-mid);}
+.remarks-box textarea{width:100%;min-height:65px;resize:vertical;font-size:13px;}
+
+/* ── SUBMIT CARD ─────────────────────────────────── */
+.submit-card{background:linear-gradient(135deg,var(--deep-green) 0%,#0E3D25 100%);border-radius:16px;
+  padding:24px 28px;display:flex;align-items:center;justify-content:space-between;gap:16px;
+  box-shadow:0 8px 32px rgba(26,92,58,0.25);margin-top:20px;}
+.submit-card-text h3{font-size:16px;font-weight:700;color:#fff;margin-bottom:3px;}
+.submit-card-text p{font-size:12px;color:rgba(255,255,255,0.65);}
+.btn-submit{font-family:'Noto Sans Gujarati',sans-serif;font-size:14px;font-weight:700;color:var(--deep-green);
+  background:linear-gradient(135deg,var(--gold-light),var(--saffron-light));border:none;border-radius:12px;
+  padding:13px 28px;cursor:pointer;transition:transform .15s,box-shadow .15s;box-shadow:0 4px 16px rgba(0,0,0,0.2);white-space:nowrap;}
+.btn-submit:hover{transform:translateY(-2px);}
+
+/* ── MODAL ───────────────────────────────────────── */
+.modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:1000;
+  align-items:center;justify-content:center;backdrop-filter:blur(4px);}
+.modal-overlay.show{display:flex;}
+.modal-box{background:var(--warm-white);border-radius:20px;padding:36px 32px;max-width:420px;width:90%;
+  text-align:center;box-shadow:0 20px 60px rgba(0,0,0,0.2);animation:popIn .3s ease;}
+@keyframes popIn{from{transform:scale(0.85);opacity:0}to{transform:scale(1);opacity:1}}
+.modal-icon{font-size:50px;margin-bottom:14px;}
+.modal-box h3{font-size:20px;color:var(--deep-green);font-weight:700;margin-bottom:8px;}
+.modal-box p{font-size:13px;color:var(--text-mid);margin-bottom:20px;line-height:1.7;}
+
+/* ── LOGIN SCREEN ────────────────────────────────── */
+.login-wrap{min-height:80vh;display:flex;align-items:center;justify-content:center;padding:30px 18px;}
+.login-card{background:var(--warm-white);border-radius:20px;border:1.5px solid var(--border);
+  padding:40px 36px;max-width:420px;width:100%;box-shadow:0 8px 40px rgba(100,60,0,0.13);text-align:center;}
+.login-icon{font-size:56px;margin-bottom:10px;}
+.login-card h2{font-size:20px;font-weight:700;color:var(--deep-green);margin-bottom:6px;}
+.login-card p{font-size:13px;color:var(--text-light);margin-bottom:20px;line-height:1.6;}
+#phoneInput{font-size:18px;letter-spacing:2px;text-align:center;border-radius:12px;border:2px solid var(--border);width:100%;margin-bottom:14px;}
+#phoneInput:focus{border-color:var(--mid-green);box-shadow:0 0 0 3px rgba(45,130,87,0.15);}
+.login-error{background:#FEF0E8;color:var(--saffron);border:1px solid #F5A048;border-radius:9px;
+  padding:10px 14px;font-size:13px;font-weight:600;margin-bottom:14px;display:none;}
+.login-error.show{display:block;}
+.login-hint{font-size:11px;color:var(--text-light);margin-top:16px;}
+.new-reg-banner{background:linear-gradient(135deg,var(--saffron-pale),#FFF3E0);color:var(--saffron);
+  border:1.5px solid var(--saffron-light);border-radius:9px;padding:8px 14px;font-size:12px;font-weight:700;margin-bottom:14px;text-align:center;}
+
+/* ── SURVEYOR BADGE on home ──────────────────────── */
+.surveyor-badge{background:var(--light-green);border:1.5px solid rgba(45,130,87,0.25);border-radius:10px;
+  padding:10px 16px;display:flex;align-items:center;gap:10px;}
+.surveyor-badge .sb-icon{font-size:22px;}
+.surveyor-badge .sb-text{text-align:left;}
+.surveyor-badge .sb-text strong{display:block;font-size:13px;color:var(--deep-green);}
+.surveyor-badge .sb-text span{font-size:11px;color:var(--text-light);}
+.change-surveyor{font-size:11px;color:var(--mid-green);text-decoration:underline;cursor:pointer;
+  background:none;border:none;font-family:'Noto Sans Gujarati',sans-serif;margin-left:auto;padding:4px 8px;}
+
+/* ── FIREBASE CONFIG WARNING ─────────────────────── */
+.config-warning{background:#FEF0E8;border:2px solid var(--saffron);border-radius:12px;
+  padding:18px 20px;margin-bottom:20px;text-align:center;}
+.config-warning h3{color:var(--saffron);font-size:15px;margin-bottom:6px;}
+.config-warning p{font-size:12px;color:var(--text-mid);line-height:1.6;}
+.config-warning code{background:rgba(232,105,10,0.1);padding:2px 6px;border-radius:4px;font-size:11px;}
+
+/* ── DASHBOARD TABLE ─────────────────────────────── */
+.dash-table{width:100%;border-collapse:collapse;font-size:13px;}
+.dash-table th{background:var(--deep-green);color:#fff;padding:10px 12px;text-align:center;font-weight:700;white-space:nowrap;}
+.dash-table th:nth-child(2){text-align:left;}
+.dash-table td{padding:10px 12px;border-bottom:1px solid var(--border);text-align:center;vertical-align:middle;}
+.dash-table td:nth-child(2),.dash-table td:nth-child(3),.dash-table td:nth-child(4){text-align:left;}
+.dash-table tr:last-child td{border-bottom:none;}
+.dash-table tr:nth-child(even) td{background:var(--saffron-pale);}
+.dash-table tr:nth-child(odd) td{background:var(--warm-white);}
+.dash-table tr:hover td{background:var(--light-green);}
+.dash-meta{margin-top:12px;font-size:12px;color:var(--text-light);text-align:right;}
+
+/* ── ADMIN TABLE ──────────────────────────────────── */
+.admin-table{width:100%;border-collapse:collapse;font-size:12px;}
+.admin-table th{background:var(--deep-green);color:#fff;padding:9px 10px;text-align:left;font-weight:700;white-space:nowrap;position:sticky;top:0;z-index:2;}
+.admin-table td{padding:9px 10px;border-bottom:1px solid var(--border);vertical-align:middle;}
+.admin-table tr:nth-child(even) td{background:var(--saffron-pale);}
+.admin-table tr:nth-child(odd) td{background:var(--warm-white);}
+.admin-table tr:hover td{background:var(--light-green);}
+.admin-table td:nth-child(5),.admin-table td:nth-child(6),.admin-table td:nth-child(7),.admin-table td:nth-child(8),.admin-table td:nth-child(9){text-align:center;}
+.summary-chip{background:var(--light-green);border:1.5px solid rgba(45,130,87,0.25);border-radius:20px;padding:5px 14px;font-weight:700;color:var(--deep-green);}
+
+@media(max-width:600px){
+  .form-row{grid-template-columns:1fr;}
+  .header-inner{padding:16px;}
+  .header-text h1{font-size:18px;}
+  .card{padding:16px 14px;}
+  .tab-btn{font-size:10px;padding:10px 4px;}
+  .tab-btn .tab-icon{font-size:16px;}
+  .question-row{flex-wrap:wrap;}
+  .star-rating label{font-size:20px;}
+  .submit-card{flex-direction:column;text-align:center;}
+  .selector-row{flex-direction:column;}
+}
+</style>
+</head>
+<body>
+
+<!-- GLOBAL LOADING OVERLAY -->
+<div id="loadingOverlay">
+  <div class="spinner"></div>
+  <div class="loading-text" id="loadingText">લોડ થઈ રહ્યું છે...</div>
+</div>
+
+<header class="header">
+  <div class="header-top-bar"></div>
+  <div class="header-inner">
+    <div class="logo-circle">🪔</div>
+    <div class="header-text">
+      <h1>સંસ્કાર સિંચન સર્વે</h1>
+      <p>Sanskar Sinchan Survey Portal</p>
+      <div class="progress-wrap" id="headerProgress" style="display:none">
+        <div class="progress-label" id="progressLabel">0 / 4 વિભાગ પૂર્ણ</div>
+        <div class="progress-track"><div class="progress-fill" id="progressFill" style="width:0%"></div></div>
+      </div>
+    </div>
+  </div>
+  <div class="header-bottom-bar"></div>
+</header>
+
+<div class="main">
+
+  <!-- ══════════════ SCREEN: LOGIN ══════════════ -->
+  <div class="screen active" id="screen-login">
+    <div class="login-wrap">
+      <div class="login-card">
+        <div class="login-icon" id="loginIcon">📱</div>
+        <h2 id="loginTitle">સર્વેકર્તા લૉગિન</h2>
+        <p id="loginSubtitle">તમારો મોબાઈલ નંબર દાખલ કરો.<br>પ્રથમ વખત: નોંધણી · ફરી: સીધો પ્રવેશ</p>
+
+        <!-- STEP 1: Phone -->
+        <div id="stepPhone">
+          <input type="tel" id="phoneInput" placeholder="10 અંકનો નંબર" maxlength="10"
+            oninput="this.value=this.value.replace(/\D/g,'')"
+            onkeydown="if(event.key==='Enter') checkPhone()" />
+          <div class="login-error" id="loginError"></div>
+          <button class="btn btn-primary" style="width:100%;padding:14px;font-size:15px;" onclick="checkPhone()">આગળ →</button>
+        </div>
+
+        <!-- STEP 2: Name (first-time only) -->
+        <div id="stepName" style="display:none;">
+          <div class="new-reg-banner">🆕 પ્રથમ વખત — નોંધણી</div>
+          <div class="form-group" style="margin-bottom:14px;text-align:left;">
+            <label style="display:block;margin-bottom:6px;">તમારું પૂરું નામ *</label>
+            <input type="text" id="regNameInput" placeholder="નામ લખો..."
+              onkeydown="if(event.key==='Enter') doRegister()" />
+          </div>
+          <div class="login-error" id="regError"></div>
+          <button class="btn btn-primary" style="width:100%;padding:14px;font-size:15px;" onclick="doRegister()">✅ નોંધણી કરો અને પ્રવેશ કરો</button>
+          <button class="btn btn-outline" style="width:100%;padding:10px;margin-top:8px;font-size:13px;" onclick="backToPhone()">← નંબર બદલો</button>
+        </div>
+
+        <p class="login-hint" id="loginHint">પ્રથમ વખત: નોંધણી આપોઆપ · ફરી: સીધો પ્રવેશ</p>
+        <div style="margin-top:20px;border-top:1px solid var(--border);padding-top:16px;">
+          <button class="btn btn-outline btn-sm" style="width:100%;font-size:12px;color:var(--text-light);" onclick="showAdminLogin()">🔐 Admin Login</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════ SCREEN: ADMIN LOGIN ══════════════ -->
+  <div class="screen" id="screen-adminlogin">
+    <div class="login-wrap">
+      <div class="login-card">
+        <div class="login-icon">🛡️</div>
+        <h2>Admin Login</h2>
+        <p style="font-size:13px;color:var(--text-light);margin-bottom:20px;">Admin credentials required to access all entries.</p>
+        <div class="form-group" style="margin-bottom:12px;text-align:left;">
+          <label>Username</label>
+          <input type="text" id="adminUser" placeholder="username" onkeydown="if(event.key==='Enter')doAdminLogin()" />
+        </div>
+        <div class="form-group" style="margin-bottom:14px;text-align:left;">
+          <label>Password</label>
+          <input type="password" id="adminPass" placeholder="password" onkeydown="if(event.key==='Enter')doAdminLogin()" />
+        </div>
+        <div class="login-error" id="adminError"></div>
+        <button class="btn btn-primary" style="width:100%;padding:14px;font-size:15px;" onclick="doAdminLogin()">🔓 Login as Admin</button>
+        <button class="btn btn-outline" style="width:100%;padding:10px;margin-top:8px;font-size:13px;" onclick="showScreen('login')">← Back</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════ SCREEN: ADMIN DASHBOARD ══════════════ -->
+  <div class="screen" id="screen-admindash">
+    <div class="back-row">
+      <button class="back-btn" onclick="adminLogout()">← Logout</button>
+      <span style="font-weight:700;font-size:14px;color:var(--deep-green)">🛡️ Admin — All Entries</span>
+    </div>
+    <div class="card">
+      <div class="card-title" style="justify-content:space-between;flex-wrap:wrap;gap:10px;">
+        <div style="display:flex;align-items:center;gap:12px;">
+          <div class="icon">📊</div><h2>બધા વિદ્યાર્થીઓ (All Surveyors)</h2>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <select id="adminFilterDistrict" style="font-size:13px;padding:7px 10px;border-radius:9px;border:1.5px solid var(--border);" onchange="onAdminDistrictFilterChange()">
+            <option value="">બધા જિલ્લા (All Districts)</option>
+          </select>
+          <select id="adminFilterTaluka" style="font-size:13px;padding:7px 10px;border-radius:9px;border:1.5px solid var(--border);" onchange="filterAdminTable()">
+            <option value="">બધા તાલુકા (All Talukas)</option>
+          </select>
+          <input type="text" id="adminSearchInput" placeholder="🔍 Search name / taluka..." style="font-size:13px;padding:7px 12px;border-radius:9px;border:1.5px solid var(--border);width:200px;" oninput="filterAdminTable()" />
+          <button class="btn btn-sm btn-primary" onclick="exportAdminCSV()">⬇️ CSV Export</button>
+          <button class="btn btn-sm btn-outline" style="color:#c0392b;border-color:#c0392b;" onclick="deleteSelectedRows()">🗑️ Delete Selected</button>
+          <button class="btn btn-sm btn-outline" style="color:#c0392b;border-color:#c0392b;" onclick="deleteAllRows()">🗑️ Delete All</button>
+        </div>
+      </div>
+      <div id="adminSummaryBar" style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:14px;font-size:13px;"></div>
+      <div style="overflow-x:auto;" id="adminDashContent">
+        <div class="empty-state"><div class="spinner" style="margin:0 auto"></div><p style="margin-top:12px;font-size:13px;">Loading all data...</p></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════ SCREEN: HOME ══════════════ -->
+  <div class="screen" id="screen-home">
+
+    <input type="hidden" id="surveyorName" />
+
+    <div class="card">
+      <div class="card-title"><div class="icon">📋</div><h2>સર્વેકર્તાની માહિતી</h2></div>
+      <div class="surveyor-badge">
+        <div class="sb-icon">👤</div>
+        <div class="sb-text">
+          <strong id="surveyorDisplayName">—</strong>
+          <span id="surveyorDisplayPhone">—</span>
+        </div>
+        <button class="change-surveyor" onclick="doLogout()">લૉગઆઉટ</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><div class="icon">🎒</div><h2>વિદ્યાર્થી પસંદ કરો</h2></div>
+      <label style="font-size:13px;font-weight:600;color:var(--text-mid);display:block;margin-bottom:8px;">ઉમેરેલ વિદ્યાર્થી</label>
+      <div class="selector-row">
+        <select id="studentDropdown"><option value="">— વિદ્યાર્થી પસંદ કરો —</option></select>
+        <button class="btn btn-primary" onclick="openExistingStudent()">ખોલો →</button>
+      </div>
+      <div class="or-divider"><span>અથવા</span></div>
+      <button class="btn btn-saffron" style="width:100%;padding:13px;" onclick="showScreen('add')">+ નવો વિદ્યાર્થી ઉમેરો</button>
+    </div>
+
+    <div class="card">
+      <div class="card-title" style="justify-content:space-between;">
+        <div style="display:flex;align-items:center;gap:12px;">
+          <div class="icon">📊</div><h2>બધા વિદ્યાર્થીઓ — સ્થિતિ</h2>
+        </div>
+        <button class="btn btn-sm btn-primary" onclick="showDashboard()">📊 ડૅશબોર્ડ</button>
+      </div>
+      <div id="studentListContainer"><div class="empty-state"><div class="es-icon">🎒</div>હજી કોઈ વિદ્યાર્થી ઉમેર્યો નથી.</div></div>
+    </div>
+
+  </div>
+
+  <!-- ══════════════ SCREEN: ADD STUDENT ══════════════ -->
+  <div class="screen" id="screen-add">
+    <div class="back-row"><button class="back-btn" onclick="goHome()">← પાછળ</button></div>
+    <div class="card">
+      <div class="card-title"><div class="icon">🎒</div><h2>નવો વિદ્યાર્થી ઉમેરો</h2></div>
+      <div class="form-row">
+        <div class="form-group full">
+          <label>વિદ્યાર્થીનું નામ *</label>
+          <input type="text" id="newStudentName" placeholder="પૂરું નામ..." />
+        </div>
+        <div class="form-group">
+          <label>જિલ્લો *</label>
+          <select id="newStudentDistrict" onchange="populateTalukas()">
+            <option value="">— જિલ્લો પસંદ કરો —</option>
+            <option value="સાબરકાંઠા">સાબરકાંઠા (Sabarkantha)</option>
+            <option value="અરવલ્લી">અરવલ્લી (Aravalli)</option>
+            <option value="બોટાદ">બોટાદ (Botad)</option>
+            <option value="નર્મદા">નર્મદા (Narmada)</option>
+            <option value="અમરેલી">અમરેલી (Amreli)</option>
+            <option value="બનાસકાંઠા">બનાસકાંઠા (Banaskantha)</option>
+            <option value="મહેસાણા">મહેસાણા (Mehsana)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>તાલુકો *</label>
+          <select id="newStudentTaluka" disabled>
+            <option value="">— પહેલાં જિલ્લો પસંદ કરો —</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>ધોરણ / Course</label>
+          <input type="text" id="newStudentClass" placeholder="દા.ત. ધો. 7 / B.Com Year 1" />
+        </div>
+        <div class="form-group full">
+          <label>શાળા / College</label>
+          <input type="text" id="newStudentSchool" placeholder="શાળા / College..." />
+        </div>
+      </div>
+      <div style="margin-top:20px;display:flex;gap:10px;justify-content:flex-end;">
+        <button class="btn btn-outline" onclick="goHome()">રદ</button>
+        <button class="btn btn-primary" id="btnAddStudent" onclick="saveNewStudent()">✓ ઉમેરો અને સર્વે શરૂ કરો</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════ SCREEN: SURVEY ══════════════ -->
+  <div class="screen" id="screen-survey">
+
+    <div class="back-row">
+      <button class="back-btn" onclick="goHome()">← પાછળ</button>
+      <span class="current-student-tag" id="currentStudentTag">—</span>
+    </div>
+
+    <div class="card" style="padding:0;overflow:visible;">
+      <div style="padding:22px 24px 0;">
+        <div class="card-title" style="border-bottom:none;padding-bottom:0;margin-bottom:14px;">
+          <div class="icon">⭐</div><h2>પ્રતિભાવ — ચાર વિભાગ</h2>
+        </div>
+      </div>
+
+      <div class="respondent-tabs" style="margin:0 24px;">
+        <button class="tab-btn active" onclick="switchTab('student')" id="tab-student">
+          <span class="tab-icon">👦</span><span>વિદ્યાર્થી</span>
+          <span class="done-badge" id="done-student">✓</span>
+        </button>
+        <button class="tab-btn" onclick="switchTab('parents')" id="tab-parents">
+          <span class="tab-icon">👨‍👩‍👧</span><span>વાલી</span>
+          <span class="done-badge" id="done-parents">✓</span>
+        </button>
+        <button class="tab-btn" onclick="switchTab('krsf')" id="tab-krsf">
+          <span class="tab-icon">🏫</span><span>KRSF</span>
+          <span class="done-badge" id="done-krsf">✓</span>
+        </button>
+        <button class="tab-btn" onclick="switchTab('govt')" id="tab-govt">
+          <span class="tab-icon">🏛️</span><span>સ. શિ./આ.</span>
+          <span class="done-badge" id="done-govt">✓</span>
+        </button>
+      </div>
+
+      <!-- ── STUDENT TAB ── -->
+      <div class="tab-panel active" id="panel-student">
+        <div class="section-locked-notice" id="lock-student">🔒 આ વિભાગ સેવ થઈ ગયો છે — ફેરફાર શક્ય નથી.</div>
+        <div class="respondent-info">
+          <label>વિદ્યાર્થીનું નામ</label>
+          <input type="text" id="name-student" readonly />
+        </div>
+        <div class="star-labels"><span>⭐ ઓછું</span><span>⭐⭐⭐ ઠીક</span><span>⭐⭐⭐⭐⭐ ઉત્તમ</span></div>
+        <div class="questions-list" id="questions-student"></div>
+        <div class="remarks-box"><label>ટિપ્પણી</label><textarea placeholder="..." id="remarks-student"></textarea></div>
+        <div class="section-footer">
+          <div class="score-info">
+            <span style="font-size:12px;color:var(--text-light)">સ્કોર:</span>
+            <span class="score-badge" id="score-student">0 / 50</span>
+            <span class="saved-indicator" id="saved-student">✅ સેવ થયું</span>
+          </div>
+          <button class="btn btn-primary" id="saveBtn-student" onclick="saveSection('student')">💾 આ વિભાગ સેવ કરો</button>
+        </div>
+      </div>
+
+      <!-- ── PARENTS TAB ── -->
+      <div class="tab-panel" id="panel-parents">
+        <div class="section-locked-notice" id="lock-parents">🔒 આ વિભાગ સેવ થઈ ગયો છે — ફેરફાર શક્ય નથી.</div>
+        <div class="respondent-info">
+          <label>વાલીનું નામ</label>
+          <input type="text" id="name-parents" placeholder="વાલીનું નામ..." />
+        </div>
+        <div class="star-labels"><span>⭐ ઓછું</span><span>⭐⭐⭐ ઠીક</span><span>⭐⭐⭐⭐⭐ ઉત્તમ</span></div>
+        <div class="questions-list" id="questions-parents"></div>
+        <div class="remarks-box"><label>ટિપ્પણી</label><textarea placeholder="..." id="remarks-parents"></textarea></div>
+        <div class="section-footer">
+          <div class="score-info">
+            <span style="font-size:12px;color:var(--text-light)">સ્કોર:</span>
+            <span class="score-badge" id="score-parents">0 / 50</span>
+            <span class="saved-indicator" id="saved-parents">✅ સેવ થયું</span>
+          </div>
+          <button class="btn btn-primary" id="saveBtn-parents" onclick="saveSection('parents')">💾 આ વિભાગ સેવ કરો</button>
+        </div>
+      </div>
+
+      <!-- ── KRSF TAB ── -->
+      <div class="tab-panel" id="panel-krsf">
+        <div class="section-locked-notice" id="lock-krsf">🔒 આ વિભાગ સેવ થઈ ગયો છે — ફેરફાર શક્ય નથી.</div>
+        <div class="respondent-info">
+          <label>KRSF શિક્ષક / સંવર્ધકનું નામ</label>
+          <input type="text" id="name-krsf" placeholder="નામ..." />
+        </div>
+        <div class="star-labels"><span>⭐ ઓછું</span><span>⭐⭐⭐ ઠીક</span><span>⭐⭐⭐⭐⭐ ઉત્તમ</span></div>
+        <div class="questions-list" id="questions-krsf"></div>
+        <div class="remarks-box"><label>ટિપ્પણી</label><textarea placeholder="..." id="remarks-krsf"></textarea></div>
+        <div class="section-footer">
+          <div class="score-info">
+            <span style="font-size:12px;color:var(--text-light)">સ્કોર:</span>
+            <span class="score-badge" id="score-krsf">0 / 50</span>
+            <span class="saved-indicator" id="saved-krsf">✅ સેવ થયું</span>
+          </div>
+          <button class="btn btn-primary" id="saveBtn-krsf" onclick="saveSection('krsf')">💾 આ વિભાગ સેવ કરો</button>
+        </div>
+      </div>
+
+      <!-- ── GOVT TAB ── -->
+      <div class="tab-panel" id="panel-govt">
+        <div class="section-locked-notice" id="lock-govt">🔒 આ વિભાગ સેવ થઈ ગયો છે — ફેરફાર શક્ય નથી.</div>
+        <div class="respondent-info">
+          <label>સરકારી શિક્ષક / આચાર્યનું નામ</label>
+          <input type="text" id="name-govt" placeholder="નામ..." />
+        </div>
+        <div class="star-labels"><span>⭐ ઓછું</span><span>⭐⭐⭐ ઠીક</span><span>⭐⭐⭐⭐⭐ ઉત્તમ</span></div>
+        <div class="questions-list" id="questions-govt"></div>
+        <div class="remarks-box"><label>ટિપ્પણી</label><textarea placeholder="..." id="remarks-govt"></textarea></div>
+        <div class="section-footer">
+          <div class="score-info">
+            <span style="font-size:12px;color:var(--text-light)">સ્કોર:</span>
+            <span class="score-badge" id="score-govt">0 / 50</span>
+            <span class="saved-indicator" id="saved-govt">✅ સેવ થયું</span>
+          </div>
+          <button class="btn btn-primary" id="saveBtn-govt" onclick="saveSection('govt')">💾 આ વિભાગ સેવ કરો</button>
+        </div>
+      </div>
+
+    </div><!-- end card -->
+
+    <div class="submit-card">
+      <div class="submit-card-text">
+        <h3>સર્વે પૂર્ણ કરો</h3>
+        <p>ચારેય વિભાગ સેવ થાય ત્યારે ફાઈનલ સબમિટ કરો</p>
+      </div>
+      <button class="btn-submit" onclick="finalSubmit()">✅ ફાઈનલ સબમિટ</button>
+    </div>
+
+  </div><!-- end survey screen -->
+
+  <!-- ══════════════ SCREEN: DASHBOARD ══════════════ -->
+  <div class="screen" id="screen-dashboard">
+    <div class="back-row">
+      <button class="back-btn" onclick="goHome()">← પાછળ</button>
+      <span style="font-weight:700;font-size:14px;color:var(--deep-green)">📊 ડૅશબોર્ડ</span>
+    </div>
+    <div class="card">
+      <div class="card-title" style="justify-content:space-between;">
+        <div style="display:flex;align-items:center;gap:12px;">
+          <div class="icon">📊</div><h2>સ્કોર ડૅશબોર્ડ</h2>
+        </div>
+        <button class="btn btn-sm btn-primary" onclick="exportCSV()">⬇️ CSV Export</button>
+      </div>
+      <div style="overflow-x:auto;" id="dashboardContent">
+        <div class="empty-state"><div class="es-icon">📊</div>ડૅશબોર્ડ લોડ થઈ રહ્યો છે...</div>
+      </div>
+    </div>
+  </div>
+
+</div><!-- end main -->
+
+<!-- MODAL -->
+<div class="modal-overlay" id="modalOverlay">
+  <div class="modal-box">
+    <div class="modal-icon" id="modalIcon">🎉</div>
+    <h3 id="modalTitle">સફળ!</h3>
+    <p id="modalMsg">—</p>
+    <button class="btn btn-primary" onclick="closeModal()" style="width:100%;padding:12px;">બરાબર છે</button>
+  </div>
+</div>
+
+<script>
+// ════════════════════════════════════════════════════════════
+//  CONSTANTS
+// ════════════════════════════════════════════════════════════
+const QUESTIONS = [
+  { id:'q1', text:'ઘરે મદદ કરતા થયો/થઈ છે?' },
+  { id:'q2', text:'નિયમિત શાળાએ જાય છે?' },
+  { id:'q3', text:'નિયમિત ગૃહ કાર્ય કરતો/કરતી થયો/થઈ છે?' },
+  { id:'q4', text:'સાચું બોલતા કે સારું નરસું વિચારતો/વિચારતી થયો/થઈ છે?' },
+  { id:'q5', text:'મહેનત કરતો/કરતી થયો/થઈ છે?' },
+  { id:'q6', text:'માતા-પિતા/વડીલો/મિત્રો સાથે વિવેકપૂર્ણ વ્યવહાર કરતો/કરતી થયો/થઈ છે?' },
+  { id:'q7', text:'સારી આદતો જેવી કે વહેલાં ઉઠવું,કહ્યું માનવું,મોબાઇલનો ઉપયોગ ઓછો કરવો,પડીકા નહિ ખાવા વધારી છે?' },
+  { id:'q8', text:'આત્મવિશ્વાસ,નીડરતા,હકારાત્મકતા પહેલાં કરતા વધ્યા છે?' },
+  { id:'q9', text:'જીંદગીમાં આગળ શું કરવું એ વિષે વિચારતો/વિચારતી થયો/થઈ છે?' },
+  { id:'q10', text:'વાંચનનો રસ જાગ્યો છે?' },
+];
+const SECTIONS   = ['student','parents','krsf','govt'];
+const SEC_LABELS = { student:'વિદ્યાર્થી', parents:'વાલી', krsf:'KRSF', govt:'સ. શિ./આ.' };
+
+// ════════════════════════════════════════════════════════════
+//  STATE
+// ════════════════════════════════════════════════════════════
+let activeSurveyor   = null;   // { phone, name }
+let pendingPhone     = null;   // during registration
+let currentStudentId = null;
+let cachedStudents   = [];     // in-memory list for current session
+let cachedSurveyData = {};     // in-memory survey data for open student
+
+// ════════════════════════════════════════════════════════════
+//  LOADING HELPERS
+// ════════════════════════════════════════════════════════════
+function showLoading(msg='લોડ થઈ રહ્યું છે...'){
+  document.getElementById('loadingText').textContent = msg;
+  document.getElementById('loadingOverlay').classList.remove('hidden');
+}
+function hideLoading(){
+  document.getElementById('loadingOverlay').classList.add('hidden');
+}
+
+// ════════════════════════════════════════════════════════════
+//  SCREEN NAVIGATION
+// ════════════════════════════════════════════════════════════
+function showScreen(name){
+  document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));
+  document.getElementById('screen-'+name).classList.add('active');
+  document.getElementById('headerProgress').style.display = name==='survey'?'block':'none';
+  window.scrollTo(0,0);
+}
+function goHome(){
+  showScreen('home');
+  renderHome();
+}
+
+// ════════════════════════════════════════════════════════════
+//  LOGIN — STEP 1: CHECK PHONE
+// ════════════════════════════════════════════════════════════
+async function checkPhone(){
+  const phone = document.getElementById('phoneInput').value.trim();
+  const err   = document.getElementById('loginError');
+  err.classList.remove('show');
+
+  if(phone.length !== 10){
+    showErr(err,'❌ કૃપા 10 અંકનો નંબર દાખલ કરો.'); return;
+  }
+
+  // Wait for Firebase to be ready
+  if(!window._db){ showErr(err,'⚠️ Firebase કનેક્ટ નથી. Config તપાસો.'); return; }
+
+  showLoading('સર્વેકર્તા ચકાસી રહ્યા છીએ...');
+  try {
+    const surveyor = await window._db.getSurveyor(phone);
+    hideLoading();
+    if(surveyor){
+      // Known → login directly
+      activeSurveyor = { phone, name: surveyor.name };
+      sessionStorage.setItem('ss_surveyor', JSON.stringify(activeSurveyor));
+      document.getElementById('phoneInput').value = '';
+      await enterHome();
+    } else {
+      // New → ask name
+      pendingPhone = phone;
+      document.getElementById('stepPhone').style.display = 'none';
+      document.getElementById('stepName').style.display  = 'block';
+      document.getElementById('loginTitle').textContent  = 'નોંધણી કરો';
+      document.getElementById('loginSubtitle').textContent = '📞 ' + phone;
+      document.getElementById('loginIcon').textContent   = '✍️';
+      document.getElementById('loginHint').style.display = 'none';
+      document.getElementById('regNameInput').focus();
+    }
+  } catch(e){
+    hideLoading();
+    showErr(err,'❌ ભૂલ: '+e.message);
+  }
+}
+
+// ════════════════════════════════════════════════════════════
+//  LOGIN — STEP 2: REGISTER NEW SURVEYOR
+// ════════════════════════════════════════════════════════════
+async function doRegister(){
+  const name = document.getElementById('regNameInput').value.trim();
+  const err  = document.getElementById('regError');
+  err.classList.remove('show');
+
+  if(!name){ showErr(err,'❌ કૃપા તમારું નામ ભરો.'); return; }
+  if(!pendingPhone) return;
+
+  showLoading('નોંધણી થઈ રહી છે...');
+  try {
+    await window._db.registerSurveyor(pendingPhone, name);
+    activeSurveyor = { phone: pendingPhone, name };
+    sessionStorage.setItem('ss_surveyor', JSON.stringify(activeSurveyor));
+    pendingPhone = null;
+    document.getElementById('phoneInput').value   = '';
+    document.getElementById('regNameInput').value = '';
+    await enterHome();
+  } catch(e){
+    hideLoading();
+    showErr(err,'❌ ભૂલ: '+e.message);
+  }
+}
+
+function backToPhone(){
+  pendingPhone = null;
+  document.getElementById('stepPhone').style.display = 'block';
+  document.getElementById('stepName').style.display  = 'none';
+  document.getElementById('loginTitle').textContent  = 'સર્વેકર્તા લૉગિન';
+  document.getElementById('loginIcon').textContent   = '📱';
+  document.getElementById('loginHint').style.display = '';
+  document.getElementById('loginSubtitle').textContent = 'તમારો મોબાઈલ નંબર દાખલ કરો.\nપ્રથમ વખત: નોંધણી · ફરી: સીધો પ્રવેશ';
+  document.getElementById('regNameInput').value = '';
+  document.getElementById('regError').classList.remove('show');
+}
+
+function doLogout(){
+  activeSurveyor   = null;
+  cachedStudents   = [];
+  cachedSurveyData = {};
+  sessionStorage.removeItem('ss_surveyor');
+  backToPhone();
+  showScreen('login');
+}
+
+// ════════════════════════════════════════════════════════════
+//  ENTER HOME — load surveyor's students from Firebase
+// ════════════════════════════════════════════════════════════
+async function enterHome(){
+  if(!activeSurveyor) return;
+  document.getElementById('surveyorName').value            = activeSurveyor.name;
+  document.getElementById('surveyorDisplayName').textContent = activeSurveyor.name;
+  document.getElementById('surveyorDisplayPhone').textContent = '📞 ' + activeSurveyor.phone;
+
+  showLoading('વિદ્યાર્થીઓ લોડ થઈ રહ્યા છે...');
+  try {
+    cachedStudents = await window._db.getStudents(activeSurveyor.phone);
+    hideLoading();
+    showScreen('home');
+    renderHome();
+  } catch(e){
+    hideLoading();
+    alert('Firebase ભૂલ: ' + e.message);
+  }
+}
+
+// ════════════════════════════════════════════════════════════
+//  RENDER HOME
+// ════════════════════════════════════════════════════════════
+function renderHome(){
+  const students = cachedStudents;
+
+  // Populate dropdown
+  const dd = document.getElementById('studentDropdown');
+  dd.innerHTML = '<option value="">— વિદ્યાર્થી પસંદ કરો —</option>';
+  students.forEach(s=>{
+    const o = document.createElement('option');
+    o.value = s.id;
+    o.textContent = s.name + (s.taluka ? ' ['+s.taluka+']' : '') + (s.studentClass ? ' ('+s.studentClass+')' : '');
+    dd.appendChild(o);
+  });
+
+  // Render student status cards
+  const container = document.getElementById('studentListContainer');
+  if(!students.length){
+    container.innerHTML='<div class="empty-state"><div class="es-icon">🎒</div>હજી કોઈ વિદ્યાર્થી ઉમેર્યો નથી.</div>';
+    return;
+  }
+  container.innerHTML = '';
+  students.forEach(async s => {
+    const data    = await window._db.getSurveyData(s.id);
+    const pills   = SECTIONS.map(sec=>{
+      const done = data[sec] && data[sec].saved;
+      return `<span class="pill ${done?'done':'pending'}">${SEC_LABELS[sec]} ${done?'✓':'–'}</span>`;
+    }).join('');
+    const doneCnt = SECTIONS.filter(sec=>data[sec]&&data[sec].saved).length;
+    const card    = document.createElement('div');
+    card.className = 'student-card';
+    card.innerHTML = `
+      <div class="sc-info">
+        <h4>${s.name}</h4>
+        <p>${[s.taluka, s.studentClass, s.school].filter(Boolean).join(' • ')}</p>
+        <div class="section-pills">${pills}</div>
+      </div>
+      <div style="text-align:right;flex-shrink:0">
+        <div style="font-size:11px;color:var(--text-light);margin-bottom:6px">${doneCnt}/4 પૂર્ણ</div>
+        <button class="btn btn-sm btn-primary" onclick="openStudent('${s.id}')">ખોલો →</button>
+      </div>`;
+    container.appendChild(card);
+  });
+}
+
+// ════════════════════════════════════════════════════════════
+//  ADD STUDENT
+// ════════════════════════════════════════════════════════════
+async function saveNewStudent(){
+  const name     = document.getElementById('newStudentName').value.trim();
+  const district = document.getElementById('newStudentDistrict').value;
+  const taluka   = document.getElementById('newStudentTaluka').value;
+  if(!name){ alert('વિદ્યાર્થીનું નામ ભરો.'); return; }
+  if(!district){ alert('કૃપા કરી જિલ્લો પસંદ કરો.'); return; }
+  if(!taluka){ alert('કૃપા કરી તાલુકો પસંદ કરો.'); return; }
+
+  const btn = document.getElementById('btnAddStudent');
+  btn.disabled = true;
+  showLoading('વિદ્યાર્થી ઉમેરાઈ રહ્યો છે...');
+  try {
+    const studentData = {
+      name,
+      district,
+      taluka,
+      studentClass : document.getElementById('newStudentClass').value.trim(),
+      school       : document.getElementById('newStudentSchool').value.trim(),
+      surveyorPhone: activeSurveyor.phone,
+      surveyorName : activeSurveyor.name,
+      addedAt      : new Date().toISOString()
+    };
+    const newId = await window._db.addStudent(studentData);
+    studentData.id = newId;
+
+    // Clear inputs
+    document.getElementById('newStudentName').value      = '';
+    document.getElementById('newStudentDistrict').value  = '';
+    document.getElementById('newStudentTaluka').innerHTML = '<option value="">— પહેલાં જિલ્લો પસંદ કરો —</option>';
+    document.getElementById('newStudentTaluka').disabled = true;
+    document.getElementById('newStudentClass').value     = '';
+    document.getElementById('newStudentSchool').value    = '';
+
+    // Add to in-memory cache and open immediately
+    cachedStudents.push(studentData);
+    hideLoading();
+    btn.disabled = false;
+    await openStudent(newId);
+  } catch(e){
+    hideLoading();
+    btn.disabled = false;
+    alert('ભૂલ: ' + e.message);
+  }
+}
+
+// ════════════════════════════════════════════════════════════
+//  OPEN EXISTING STUDENT (from dropdown)
+// ════════════════════════════════════════════════════════════
+async function openExistingStudent(){
+  const id = document.getElementById('studentDropdown').value;
+  if(!id){ alert('વિદ્યાર્થી પસંદ કરો.'); return; }
+  await openStudent(id);
+}
+
+// ════════════════════════════════════════════════════════════
+//  OPEN STUDENT SURVEY
+// ════════════════════════════════════════════════════════════
+async function openStudent(id){
+  showLoading('સર્વે ડેટા લોડ થઈ રહ્યો છે...');
+  try {
+    const student = cachedStudents.find(s=>s.id===id)
+                 || (await window._db.getStudents(activeSurveyor.phone)).find(s=>s.id===id);
+    if(!student){ hideLoading(); alert('વિદ્યાર્થી મળ્યો નહીં.'); return; }
+
+    currentStudentId = id;
+    cachedSurveyData = await window._db.getSurveyData(id);
+    hideLoading();
+
+    document.getElementById('currentStudentTag').textContent = '👦 '+student.name;
+    document.getElementById('name-student').value = student.name;
+
+    // Build questions fresh
+    SECTIONS.forEach(sec => buildQuestions(sec));
+
+    // Reset all UI first
+    SECTIONS.forEach(sec=>{
+      document.getElementById('saved-'+sec).classList.remove('show');
+      document.getElementById('tab-'+sec).classList.remove('done-tab');
+      document.getElementById('done-'+sec).style.display = 'none';
+      document.getElementById('lock-'+sec).classList.remove('show');
+      if(sec!=='student') document.getElementById('name-'+sec).value='';
+      document.getElementById('remarks-'+sec).value='';
+    });
+
+    // Load saved data & lock saved sections
+    SECTIONS.forEach(sec=>{
+      const d = cachedSurveyData[sec];
+      if(!d) return;
+      if(d.respondentName && sec!=='student')
+        document.getElementById('name-'+sec).value = d.respondentName;
+      if(d.remarks)
+        document.getElementById('remarks-'+sec).value = d.remarks;
+      if(d.scores)
+        QUESTIONS.forEach(q=>{
+          const v = d.scores[q.id];
+          if(v){ const r=document.getElementById(`${sec}-${q.id}-${v}`); if(r) r.checked=true; }
+        });
+      if(d.saved){
+        document.getElementById('saved-'+sec).classList.add('show');
+        document.getElementById('tab-'+sec).classList.add('done-tab');
+        document.getElementById('done-'+sec).style.display='flex';
+        lockSection(sec);  // ← make read-only
+      }
+      updateScore(sec);
+    });
+
+    updateProgress();
+    switchTab('student');
+    showScreen('survey');
+  } catch(e){
+    hideLoading();
+    alert('ભૂલ: ' + e.message);
+  }
+}
+
+// ════════════════════════════════════════════════════════════
+//  LOCK SECTION (read-only after save)
+// ════════════════════════════════════════════════════════════
+function lockSection(sec){
+  // Show locked notice
+  document.getElementById('lock-'+sec).classList.add('show');
+
+  // Disable name input
+  const nameEl = document.getElementById('name-'+sec);
+  if(nameEl) nameEl.disabled = true;
+
+  // Disable all star radios
+  const panel = document.getElementById('panel-'+sec);
+  panel.querySelectorAll('.star-rating').forEach(sr => sr.classList.add('locked'));
+  panel.querySelectorAll('input[type="radio"]').forEach(r => r.disabled = true);
+
+  // Disable remarks
+  const remarks = document.getElementById('remarks-'+sec);
+  if(remarks) remarks.disabled = true;
+
+  // Hide save button
+  const saveBtn = document.getElementById('saveBtn-'+sec);
+  if(saveBtn) saveBtn.style.display = 'none';
+}
+
+// ════════════════════════════════════════════════════════════
+//  BUILD QUESTIONS
+// ════════════════════════════════════════════════════════════
+function buildQuestions(section){
+  document.getElementById('questions-'+section).innerHTML = QUESTIONS.map((q,i)=>`
+    <div class="question-row">
+      <div class="q-num">${i+1}</div>
+      <div class="q-text">${q.text}</div>
+      <div class="star-rating" id="stars-${section}-${q.id}">
+        ${[5,4,3,2,1].map(n=>`
+          <input type="radio" name="${section}-${q.id}" id="${section}-${q.id}-${n}" value="${n}"
+            onchange="updateScore('${section}')">
+          <label for="${section}-${q.id}-${n}" title="${n} સ્ટાર">★</label>`).join('')}
+      </div>
+    </div>`).join('');
+}
+
+// ════════════════════════════════════════════════════════════
+//  SCORE
+// ════════════════════════════════════════════════════════════
+function updateScore(section){
+  let total = 0;
+  QUESTIONS.forEach(q=>{
+    const s = document.querySelector(`input[name="${section}-${q.id}"]:checked`);
+    if(s) total += parseInt(s.value);
+  });
+  document.getElementById('score-'+section).textContent = total+' / 50';
+}
+
+// ════════════════════════════════════════════════════════════
+//  SAVE SECTION → Firebase
+// ════════════════════════════════════════════════════════════
+async function saveSection(section){
+  // Guard: already saved?
+  if(cachedSurveyData[section] && cachedSurveyData[section].saved){
+    alert('આ વિભાગ પહેલેથી સેવ છે.'); return;
+  }
+  const allDone = QUESTIONS.every(q =>
+    document.querySelector(`input[name="${section}-${q.id}"]:checked`));
+  if(!allDone){ alert('કૃપા કરી બધા '+QUESTIONS.length+' પ્રશ્નોના જવાબ આપો.'); return; }
+
+  const scores = {};
+  QUESTIONS.forEach(q=>{
+    const s = document.querySelector(`input[name="${section}-${q.id}"]:checked`);
+    scores[q.id] = s ? parseInt(s.value) : 0;
+  });
+
+  const sectionData = {
+    respondentName : section!=='student' ? document.getElementById('name-'+section).value.trim() : '',
+    scores,
+    remarks  : document.getElementById('remarks-'+section).value.trim(),
+    saved    : true,
+    savedAt  : new Date().toISOString(),
+    savedBy  : activeSurveyor.name,
+    savedByPhone: activeSurveyor.phone
+  };
+
+  const btn = document.getElementById('saveBtn-'+section);
+  btn.disabled = true;
+  showLoading('સેવ થઈ રહ્યું છે...');
+  try {
+    await window._db.saveSurveySection(currentStudentId, section, sectionData);
+    cachedSurveyData[section] = sectionData;
+    hideLoading();
+    document.getElementById('saved-'+section).classList.add('show');
+    document.getElementById('tab-'+section).classList.add('done-tab');
+    document.getElementById('done-'+section).style.display = 'flex';
+    lockSection(section);
+    updateProgress();
+  } catch(e){
+    hideLoading();
+    btn.disabled = false;
+    alert('ભૂલ: ' + e.message);
+  }
+}
+
+// ════════════════════════════════════════════════════════════
+//  PROGRESS BAR
+// ════════════════════════════════════════════════════════════
+function updateProgress(){
+  const done = SECTIONS.filter(s => cachedSurveyData[s] && cachedSurveyData[s].saved).length;
+  document.getElementById('progressFill').style.width = (done/4*100)+'%';
+  document.getElementById('progressLabel').textContent = done+' / 4 વિભાગ પૂર્ણ';
+}
+
+// ════════════════════════════════════════════════════════════
+//  TAB SWITCH
+// ════════════════════════════════════════════════════════════
+function switchTab(section){
+  SECTIONS.forEach(s=>{
+    document.getElementById('tab-'+s).classList.remove('active');
+    document.getElementById('panel-'+s).classList.remove('active');
+  });
+  document.getElementById('tab-'+section).classList.add('active');
+  document.getElementById('panel-'+section).classList.add('active');
+}
+
+// ════════════════════════════════════════════════════════════
+//  FINAL SUBMIT
+// ════════════════════════════════════════════════════════════
+function finalSubmit(){
+  const pending = SECTIONS.filter(s=>!(cachedSurveyData[s]&&cachedSurveyData[s].saved));
+  const student = cachedStudents.find(s=>s.id===currentStudentId);
+  const totals  = SECTIONS.map(s=>
+    (cachedSurveyData[s]&&cachedSurveyData[s].saved)
+      ? Object.values(cachedSurveyData[s].scores).reduce((a,b)=>a+b,0)
+      : null);
+  const fmt = v => v===null ? '<span style="color:var(--text-light)">—</span>' : v+'/50';
+  const allDone = pending.length===0;
+  showModal(
+    allDone ? '🎉' : '📋',
+    allDone ? 'સર્વે પૂર્ણ!' : 'સ્કોર સારાંશ',
+    `<strong>${student.name}</strong><br><br>
+     👦 વિ.: ${fmt(totals[0])} &nbsp;|&nbsp; 👨‍👩‍👧 વાલી: ${fmt(totals[1])}<br>
+     🏫 KRSF: ${fmt(totals[2])} &nbsp;|&nbsp; 🏛️ સ. શિ.: ${fmt(totals[3])}`
+    + (pending.length ? `<br><br><small style="color:var(--text-light)">⏳ અધૂરા: ${pending.map(s=>SEC_LABELS[s]).join(', ')}</small>` : '')
+  );
+}
+
+// ════════════════════════════════════════════════════════════
+//  MODAL
+// ════════════════════════════════════════════════════════════
+function showModal(icon,title,msg){
+  document.getElementById('modalIcon').textContent   = icon;
+  document.getElementById('modalTitle').textContent  = title;
+  document.getElementById('modalMsg').innerHTML      = msg;
+  document.getElementById('modalOverlay').classList.add('show');
+}
+function closeModal(){ document.getElementById('modalOverlay').classList.remove('show'); }
+
+// ════════════════════════════════════════════════════════════
+//  DASHBOARD
+// ════════════════════════════════════════════════════════════
+async function showDashboard(){
+  showScreen('dashboard');
+  const container = document.getElementById('dashboardContent');
+  container.innerHTML = '<div class="empty-state"><div class="spinner" style="margin:0 auto"></div><p style="margin-top:12px;font-size:13px;color:var(--text-mid)">ડેટા લોડ થઈ રહ્યો છે...</p></div>';
+
+  if(!cachedStudents.length){
+    container.innerHTML = '<div class="empty-state"><div class="es-icon">📊</div>હજી કોઈ વિદ્યાર્થી ઉમેર્યો નથી.</div>';
+    return;
+  }
+
+  // Fetch survey data for every student
+  const rows = await Promise.all(cachedStudents.map(async s => {
+    const data = await window._db.getSurveyData(s.id);
+    const scores = SECTIONS.map(sec =>
+      (data[sec] && data[sec].saved)
+        ? Object.values(data[sec].scores).reduce((a,b) => a+b, 0)
+        : null
+    );
+    const savedCount = scores.filter(v => v !== null).length;
+    const total = scores.filter(v => v !== null).reduce((a,b) => a+b, 0);
+    return { student:s, scores, total, savedCount };
+  }));
+
+  // Cache for export
+  window._dashData = rows;
+
+  const fmt = v => v === null
+    ? '<span style="color:var(--text-light)">—</span>'
+    : `<strong>${v}</strong>`;
+
+  const tbody = rows.map((r, i) => `
+    <tr>
+      <td>${i+1}</td>
+      <td><strong>${r.student.name}</strong></td>
+      <td>${r.student.taluka || '—'}</td>
+      <td>${r.student.studentClass || '—'}</td>
+      <td>${fmt(r.scores[0])}</td>
+      <td>${fmt(r.scores[1])}</td>
+      <td>${fmt(r.scores[2])}</td>
+      <td>${fmt(r.scores[3])}</td>
+      <td>${r.savedCount ? '<strong>'+(r.scores.filter(v=>v!==null).reduce((a,b)=>a+b,0))+'</strong>' : '<span style="color:var(--text-light)">—</span>'}</td>
+      <td><span class="pill ${r.savedCount===4?'done':'pending'}">${r.savedCount}/4 ✓</span></td>
+    </tr>`).join('');
+
+  container.innerHTML = `
+    <table class="dash-table">
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>નામ</th>
+          <th>તાલુકો</th>
+          <th>ધોરણ</th>
+          <th>👦 વિ.</th>
+          <th>👨‍👩‍👧 વાલી</th>
+          <th>🏫 KRSF</th>
+          <th>🏛️ સ.શિ.</th>
+          <th>કુલ</th>
+          <th>સ્થિતિ</th>
+        </tr>
+      </thead>
+      <tbody>${tbody}</tbody>
+    </table>
+    <div class="dash-meta">
+      કુલ ${rows.length} વિદ્યાર્થી &nbsp;·&nbsp; ${rows.filter(r=>r.savedCount===4).length} પૂર્ણ &nbsp;·&nbsp; ${rows.filter(r=>r.savedCount>0&&r.savedCount<4).length} અધૂરા
+    </div>`;
+}
+
+// ════════════════════════════════════════════════════════════
+//  CSV EXPORT
+// ════════════════════════════════════════════════════════════
+function exportCSV(){
+  const rows = window._dashData || [];
+  if(!rows.length){ alert('ડૅશબોર્ડ ખાલી છે. પહેલા ડૅશબોર્ડ ખોલો.'); return; }
+
+  const q = v => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
+
+  const headers = ['#','નામ','તાલુકો','ધોરણ','શાળા','સર્વેકર્તા',
+    'વિ. સ્કોર (/50)','વાલી સ્કોર (/50)','KRSF સ્કોર (/50)','સ.શિ. સ્કોર (/50)',
+    'કુલ સ્કોર','પૂર્ણ વિભાગ (4 માંથી)'];
+
+  const dataRows = rows.map((r, i) => [
+    i+1,
+    r.student.name,
+    r.student.taluka || '',
+    r.student.studentClass || '',
+    r.student.school || '',
+    r.student.surveyorName || '',
+    r.scores[0] !== null ? r.scores[0] : '',
+    r.scores[1] !== null ? r.scores[1] : '',
+    r.scores[2] !== null ? r.scores[2] : '',
+    r.scores[3] !== null ? r.scores[3] : '',
+    r.savedCount ? r.total : '',
+    r.savedCount
+  ].map(q).join(','));
+
+  const csv  = '\uFEFF' + [headers.map(q).join(','), ...dataRows].join('\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href     = url;
+  a.download = 'sanskar_sinchan_' + new Date().toISOString().slice(0,10) + '.csv';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+// ════════════════════════════════════════════════════════════
+//  ADMIN LOGIN & DASHBOARD
+// ════════════════════════════════════════════════════════════
+const ADMIN_USER = 'pratik';
+const ADMIN_PASS = 'emp@123';
+let adminAllRows = [];  // cached for export & filter
+let adminCurrentPage = 1;
+const ADMIN_PAGE_SIZE = 20;
+
+function showAdminLogin(){
+  document.getElementById('adminUser').value = '';
+  document.getElementById('adminPass').value = '';
+  document.getElementById('adminError').classList.remove('show');
+  showScreen('adminlogin');
+  setTimeout(()=>document.getElementById('adminUser').focus(), 100);
+}
+
+async function doAdminLogin(){
+  const u = document.getElementById('adminUser').value.trim();
+  const p = document.getElementById('adminPass').value;
+  const err = document.getElementById('adminError');
+  err.classList.remove('show');
+  if(u !== ADMIN_USER || p !== ADMIN_PASS){
+    showErr(err,'❌ Invalid username or password.');
+    return;
+  }
+  showScreen('admindash');
+  await loadAdminDashboard();
+}
+
+function adminLogout(){
+  adminAllRows = [];
+  adminCurrentPage = 1;
+  showScreen('login');
+}
+
+async function loadAdminDashboard(){
+  const content = document.getElementById('adminDashContent');
+  const summaryBar = document.getElementById('adminSummaryBar');
+  content.innerHTML = '<div class="empty-state"><div class="spinner" style="margin:0 auto"></div><p style="margin-top:12px;font-size:13px;">Loading all entries from Firebase...</p></div>';
+  summaryBar.innerHTML = '';
+
+  if(!window._db){ content.innerHTML = '<div class="empty-state">⚠️ Firebase not connected.</div>'; return; }
+
+  try {
+    const [allStudents] = await Promise.all([window._db.getAllStudents()]);
+    if(!allStudents.length){
+      content.innerHTML = '<div class="empty-state"><div class="es-icon">📊</div>No entries found.</div>';
+      return;
+    }
+
+    const rows = await Promise.all(allStudents.map(async s => {
+      const data = await window._db.getSurveyData(s.id);
+      const scores = SECTIONS.map(sec =>
+        (data[sec] && data[sec].saved)
+          ? Object.values(data[sec].scores).reduce((a,b)=>a+b,0)
+          : null
+      );
+      const savedCount = scores.filter(v=>v!==null).length;
+      const total = scores.filter(v=>v!==null).reduce((a,b)=>a+b,0);
+      return { student:s, scores, total, savedCount };
+    }));
+
+    adminAllRows = rows;
+    adminCurrentPage = 1;
+    populateAdminFilters(rows);
+    renderAdminTable(rows);
+
+    // Summary chips
+    const complete = rows.filter(r=>r.savedCount===4).length;
+    const partial  = rows.filter(r=>r.savedCount>0&&r.savedCount<4).length;
+    const empty    = rows.filter(r=>r.savedCount===0).length;
+    const surveyors = [...new Set(rows.map(r=>r.student.surveyorName||r.student.surveyorPhone||'—'))];
+    summaryBar.innerHTML = `
+      <span class="summary-chip">👥 Total: ${rows.length}</span>
+      <span class="summary-chip">✅ Complete: ${complete}</span>
+      <span class="summary-chip">⏳ Partial: ${partial}</span>
+      <span class="summary-chip">📭 Empty: ${empty}</span>
+      <span class="summary-chip">🧑‍💼 Surveyors: ${surveyors.length}</span>`;
+  } catch(e){
+    content.innerHTML = `<div class="empty-state">❌ Error: ${e.message}</div>`;
+  }
+}
+
+function populateAdminFilters(rows){
+  const districtSel = document.getElementById('adminFilterDistrict');
+  const prevDistrict = districtSel.value;
+  const districts = [...new Set(rows.map(r=>r.student.district).filter(Boolean))].sort();
+
+  districtSel.innerHTML = '<option value="">બધા જિલ્લા (All Districts)</option>' +
+    districts.map(d=>`<option value="${d}">${d}</option>`).join('');
+  // Restore previous selection if it still exists
+  if(districts.includes(prevDistrict)) districtSel.value = prevDistrict;
+
+  updateAdminTalukaFilter(rows);
+}
+
+function updateAdminTalukaFilter(rows){
+  const districtSel = document.getElementById('adminFilterDistrict');
+  const talukaSel   = document.getElementById('adminFilterTaluka');
+  const prevTaluka  = talukaSel.value;
+  const chosenDistrict = districtSel.value;
+
+  const relevant = chosenDistrict
+    ? rows.filter(r=>r.student.district===chosenDistrict)
+    : rows;
+  const talukas = [...new Set(relevant.map(r=>r.student.taluka).filter(Boolean))].sort();
+
+  talukaSel.innerHTML = '<option value="">બધા તાલુકા (All Talukas)</option>' +
+    talukas.map(t=>`<option value="${t}">${t}</option>`).join('');
+  if(talukas.includes(prevTaluka)) talukaSel.value = prevTaluka;
+}
+
+function onAdminDistrictFilterChange(){
+  updateAdminTalukaFilter(adminAllRows);
+  filterAdminTable();
+}
+
+function renderAdminTable(rows){
+  const fmt = v => v===null
+    ? '<span style="color:#aaa">—</span>'
+    : `<strong>${v}</strong>`;
+
+  const searchVal  = (document.getElementById('adminSearchInput').value||'').toLowerCase();
+  const districtVal = document.getElementById('adminFilterDistrict').value;
+  const talukaVal   = document.getElementById('adminFilterTaluka').value;
+
+  let filtered = rows;
+  if(districtVal) filtered = filtered.filter(r => r.student.district === districtVal);
+  if(talukaVal)   filtered = filtered.filter(r => r.student.taluka === talukaVal);
+  if(searchVal){
+    filtered = filtered.filter(r =>
+      (r.student.name||'').toLowerCase().includes(searchVal) ||
+      (r.student.taluka||'').toLowerCase().includes(searchVal) ||
+      (r.student.surveyorName||'').toLowerCase().includes(searchVal) ||
+      (r.student.school||'').toLowerCase().includes(searchVal)
+    );
+  }
+
+  if(!filtered.length){
+    document.getElementById('adminDashContent').innerHTML =
+      '<div class="empty-state">No results found for that search/filter.</div>';
+    return;
+  }
+
+  // ── Pagination ──
+  const totalPages = Math.max(1, Math.ceil(filtered.length / ADMIN_PAGE_SIZE));
+  if(adminCurrentPage > totalPages) adminCurrentPage = totalPages;
+  if(adminCurrentPage < 1) adminCurrentPage = 1;
+  const startIdx = (adminCurrentPage - 1) * ADMIN_PAGE_SIZE;
+  const pageRows = filtered.slice(startIdx, startIdx + ADMIN_PAGE_SIZE);
+
+  const tbody = pageRows.map((r,i)=>`
+    <tr>
+      <td><input type="checkbox" class="admin-row-check" value="${r.student.id}" onchange="updateSelectAllState()" /></td>
+      <td>${startIdx + i + 1}</td>
+      <td><strong>${r.student.name||'—'}</strong></td>
+      <td>${r.student.district||'—'}</td>
+      <td>${r.student.taluka||'—'}</td>
+      <td>${r.student.studentClass||'—'}</td>
+      <td>${r.student.school||'—'}</td>
+      <td>${r.student.surveyorName||'—'}</td>
+      <td>${fmt(r.scores[0])}</td>
+      <td>${fmt(r.scores[1])}</td>
+      <td>${fmt(r.scores[2])}</td>
+      <td>${fmt(r.scores[3])}</td>
+      <td>${r.savedCount ? '<strong>'+r.total+'</strong>' : '<span style="color:#aaa">—</span>'}</td>
+      <td><span class="pill ${r.savedCount===4?'done':'pending'}">${r.savedCount}/4 ✓</span></td>
+    </tr>`).join('');
+
+  const pagerHtml = `
+    <div class="dash-pager" style="display:flex;align-items:center;justify-content:center;gap:10px;margin-top:14px;flex-wrap:wrap;">
+      <button class="btn btn-sm btn-outline" ${adminCurrentPage<=1?'disabled':''} onclick="goToAdminPage(1)">« First</button>
+      <button class="btn btn-sm btn-outline" ${adminCurrentPage<=1?'disabled':''} onclick="goToAdminPage(${adminCurrentPage-1})">‹ Prev</button>
+      <span style="font-size:13px;font-weight:600;color:var(--text-mid);">Page ${adminCurrentPage} of ${totalPages}</span>
+      <button class="btn btn-sm btn-outline" ${adminCurrentPage>=totalPages?'disabled':''} onclick="goToAdminPage(${adminCurrentPage+1})">Next ›</button>
+      <button class="btn btn-sm btn-outline" ${adminCurrentPage>=totalPages?'disabled':''} onclick="goToAdminPage(${totalPages})">Last »</button>
+    </div>`;
+
+  document.getElementById('adminDashContent').innerHTML = `
+    <table class="admin-table">
+      <thead>
+        <tr>
+          <th><input type="checkbox" id="adminSelectAll" onchange="toggleSelectAllRows(this)" /></th>
+          <th>#</th><th>નામ</th><th>જિલ્લો</th><th>તાલુકો</th><th>ધોરણ</th><th>શાળા</th><th>Surveyor</th>
+          <th>👦 વિ.</th><th>👨‍👩‍👧 વાલી</th><th>🏫 KRSF</th><th>🏛️ સ.શિ.</th><th>કુલ</th><th>Status</th>
+        </tr>
+      </thead>
+      <tbody>${tbody}</tbody>
+    </table>
+    <div class="dash-meta">Showing ${startIdx+1}–${Math.min(startIdx+ADMIN_PAGE_SIZE, filtered.length)} of ${filtered.length} entries (${rows.length} total)</div>
+    ${pagerHtml}`;
+}
+
+function goToAdminPage(page){
+  adminCurrentPage = page;
+  renderAdminTable(adminAllRows);
+}
+
+function toggleSelectAllRows(checkbox){
+  document.querySelectorAll('.admin-row-check').forEach(cb => cb.checked = checkbox.checked);
+}
+
+function updateSelectAllState(){
+  const boxes = document.querySelectorAll('.admin-row-check');
+  const selectAll = document.getElementById('adminSelectAll');
+  if(!selectAll) return;
+  selectAll.checked = boxes.length>0 && Array.from(boxes).every(cb=>cb.checked);
+}
+
+async function deleteSelectedRows(){
+  const ids = Array.from(document.querySelectorAll('.admin-row-check:checked')).map(cb=>cb.value);
+  if(!ids.length){ alert('કૃપા કરી ડિલીટ કરવા માટે ઓછામાં ઓછી એક એન્ટ્રી પસંદ કરો.'); return; }
+  if(!confirm(`શું તમે ખરેખર ${ids.length} પસંદ કરેલી એન્ટ્રી(ઓ) ડિલીટ કરવા માંગો છો? આ ક્રિયા પાછી ફેરવી શકાશે નહીં.`)) return;
+
+  showLoading('ડિલીટ થઈ રહ્યું છે...');
+  try {
+    await window._db.deleteStudents(ids);
+    await loadAdminDashboard();
+  } catch(e) {
+    alert('Delete error: '+e.message);
+  } finally {
+    hideLoading();
+  }
+}
+
+async function deleteAllRows(){
+  if(!adminAllRows.length){ alert('ડિલીટ કરવા માટે કોઈ એન્ટ્રી નથી.'); return; }
+  if(!confirm(`શું તમે ખરેખર બધી ${adminAllRows.length} એન્ટ્રી(ઓ) ડિલીટ કરવા માંગો છો? આ ક્રિયા પાછી ફેરવી શકાશે નહીં.`)) return;
+  if(!confirm('ફરી ખાતરી કરો: આ તમામ ડેટા કાયમ માટે ડિલીટ થઈ જશે. ચાલુ રાખવું છે?')) return;
+
+  showLoading('બધું ડિલીટ થઈ રહ્યું છે...');
+  try {
+    await window._db.deleteAllStudents();
+    await loadAdminDashboard();
+  } catch(e) {
+    alert('Delete error: '+e.message);
+  } finally {
+    hideLoading();
+  }
+}
+
+function filterAdminTable(){
+  adminCurrentPage = 1;
+  if(adminAllRows.length) renderAdminTable(adminAllRows);
+}
+
+async function exportAdminCSV(){
+  if(!adminAllRows.length){ alert('No data loaded. Please wait for dashboard to finish loading.'); return; }
+
+  const qe = v => '"'+String(v==null?'':v).replace(/"/g,'""')+'"';
+
+  // Section keys and display labels
+  const SEC_KEYS   = ['student','parents','krsf','govt'];
+  const SEC_NAMES  = { student:'વિ. (Student)', parents:'વાલી (Parent)', krsf:'KRSF', govt:'સ.શિ. (Govt)' };
+
+  // Build header row
+  const baseHeaders = ['#','નામ','જિલ્લો','તાલુકો','ધોરણ','શાળા','Surveyor','Surveyor Phone'];
+  const qHeaders = [];
+  SEC_KEYS.forEach(sec => {
+    qHeaders.push(`${SEC_NAMES[sec]} — Respondent Name`);
+    QUESTIONS.forEach((q, qi) => {
+      qHeaders.push(`${SEC_NAMES[sec]} — Q${qi+1}: ${q.text}`);
+    });
+    qHeaders.push(`${SEC_NAMES[sec]} — Score (/50)`);
+    qHeaders.push(`${SEC_NAMES[sec]} — Remarks`);
+  });
+  const summaryHeaders = ['Total Score (/200)','Sections Done (out of 4)'];
+  const allHeaders = [...baseHeaders, ...qHeaders, ...summaryHeaders];
+
+  // Fetch full survey data for each student (it's already loaded in adminAllRows via loadAdminDashboard,
+  // but we need per-question scores; re-fetch from Firebase)
+  showLoading('CSV તૈયાર થઈ રહ્યું છે...');
+  let fullRows;
+  try {
+    fullRows = await Promise.all(adminAllRows.map(async (r, i) => {
+      const data = await window._db.getSurveyData(r.student.id);
+      const base = [
+        i+1,
+        r.student.name||'',
+        r.student.district||'',
+        r.student.taluka||'',
+        r.student.studentClass||'',
+        r.student.school||'',
+        r.student.surveyorName||'',
+        r.student.surveyorPhone||''
+      ];
+      const qCols = [];
+      SEC_KEYS.forEach(sec => {
+        const sd = data[sec] || {};
+        const saved = !!sd.saved;
+        qCols.push(sd.respondentName||'');
+        QUESTIONS.forEach(q => {
+          qCols.push(saved && sd.scores && sd.scores[q.id] != null ? sd.scores[q.id] : '');
+        });
+        const secScore = saved && sd.scores
+          ? Object.values(sd.scores).reduce((a,b)=>a+b,0)
+          : '';
+        qCols.push(secScore);
+        qCols.push(sd.remarks||'');
+      });
+      const summary = [
+        r.savedCount ? r.total : '',
+        r.savedCount
+      ];
+      return [...base, ...qCols, ...summary];
+    }));
+  } catch(e) {
+    hideLoading();
+    alert('CSV export error: '+e.message);
+    return;
+  }
+  hideLoading();
+
+  const csv = '\uFEFF' + [allHeaders.map(qe).join(','), ...fullRows.map(row => row.map(qe).join(','))].join('\n');
+  const blob = new Blob([csv],{type:'text/csv;charset=utf-8;'});
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href=url; a.download='admin_all_entries_detailed_'+new Date().toISOString().slice(0,10)+'.csv';
+  document.body.appendChild(a); a.click();
+  document.body.removeChild(a); URL.revokeObjectURL(url);
+}
+
+// ════════════════════════════════════════════════════════════
+//  DISTRICT → TALUKA DATA
+// ════════════════════════════════════════════════════════════
+const DISTRICT_TALUKAS = {
+  'સાબરકાંઠા': [
+    { gu: 'હિંમતનગર',   en: 'Himmatnagar'   },
+    { gu: 'ઇડર',        en: 'Idar'           },
+    { gu: 'મોડાસા',     en: 'Modasa'         },
+    { gu: 'પ્રાંતિજ',   en: 'Prantij'        },
+    { gu: 'તલોદ',       en: 'Talod'          },
+    { gu: 'વિજયનગર',    en: 'Vijaynagar'     },
+    { gu: 'ખેડબ્રહ્મા',  en: 'Khedbrahma'    },
+    { gu: 'વડાળી',      en: 'Vadali'         },
+    { gu: 'પોશીના',     en: 'Poshina'        },
+    { gu: 'ધનસુરા',     en: 'Dhansura'       },
+  ],
+  'અરવલ્લી': [
+    { gu: 'મોડાસા',     en: 'Modasa'         },
+    { gu: 'બાયડ',       en: 'Bayad'          },
+    { gu: 'ધનસુરા',     en: 'Dhansura'       },
+    { gu: 'મેઘરજ',      en: 'Meghraj'        },
+    { gu: 'માલપુર',     en: 'Malpur'         },
+    { gu: 'ભિલોડા',     en: 'Bhiloda'        },
+  ],
+  'બોટાદ': [
+    { gu: 'બોટાદ',      en: 'Botad'          },
+    { gu: 'બરવાળા',     en: 'Barvala'        },
+    { gu: 'ગઢડા',       en: 'Gadhada'        },
+    { gu: 'રાણપુર',     en: 'Ranpur'         },
+  ],
+  'નર્મદા': [
+    { gu: 'દેડિયાપાડા',  en: 'Dediyapada'     },
+    { gu: 'સાગબારા',    en: 'Sagbara'        },
+  ],
+  'અમરેલી': [
+    { gu: 'બાબરા',      en: 'Babra'          },
+  ],
+  'બનાસકાંઠા': [
+    { gu: 'દાંતા',      en: 'Danta'          },
+    { gu: 'હડદ',        en: 'Hadad'          },
+  ],
+  'મહેસાણા': [
+    { gu: 'સતલાસણા',    en: 'Satlasana'      },
+  ]
+};
+
+function populateTalukas() {
+  const districtSel = document.getElementById('newStudentDistrict');
+  const talukaSel   = document.getElementById('newStudentTaluka');
+  const chosen      = districtSel.value;
+
+  talukaSel.innerHTML = '';
+
+  if (!chosen) {
+    talukaSel.innerHTML = '<option value="">— પહેલાં જિલ્લો પસંદ કરો —</option>';
+    talukaSel.disabled = true;
+    return;
+  }
+
+  talukaSel.disabled = false;
+  const opt0 = document.createElement('option');
+  opt0.value = ''; opt0.textContent = '— તાલુકો પસંદ કરો —';
+  talukaSel.appendChild(opt0);
+
+  (DISTRICT_TALUKAS[chosen] || []).forEach(t => {
+    const opt = document.createElement('option');
+    opt.value = t.gu;
+    opt.textContent = `${t.gu} (${t.en})`;
+    talukaSel.appendChild(opt);
+  });
+}
+
+// ════════════════════════════════════════════════════════════
+//  HELPERS
+// ════════════════════════════════════════════════════════════
+function showErr(el, msg){ el.textContent = msg; el.classList.add('show'); }
+
+// ════════════════════════════════════════════════════════════
+//  INIT — restore session if page is refreshed
+// ════════════════════════════════════════════════════════════
+(async function init(){
+  // Wait for Firebase module to initialise (it's type="module" so async)
+  let tries = 0;
+  while(!window._db && tries < 30){ await new Promise(r=>setTimeout(r,100)); tries++; }
+
+  if(!window._db){
+    hideLoading();
+    // Show config warning if Firebase not set up
+    const loginCard = document.querySelector('.login-card');
+    const warn = document.createElement('div');
+    warn.className = 'config-warning';
+    warn.innerHTML = `<h3>⚙️ Firebase Config જોઈએ</h3>
+      <p>HTML ફાઈલ ખોલો અને <code>firebaseConfig</code> ઑબ્જેક્ટ<br>
+      તમારા Firebase project ની values થી ભરો.<br>
+      <a href="https://console.firebase.google.com" target="_blank" style="color:var(--saffron)">console.firebase.google.com</a></p>`;
+    loginCard.insertBefore(warn, loginCard.firstChild);
+    showScreen('login');
+    return;
+  }
+
+  hideLoading();
+
+  const saved = sessionStorage.getItem('ss_surveyor');
+  if(saved){
+    try {
+      activeSurveyor = JSON.parse(saved);
+      await enterHome();
+      return;
+    } catch(e){ /* fall through */ }
+  }
+  showScreen('login');
+})();
+</script>
+</body>
+</html>
